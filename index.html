@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 몸으로 말해요 퀴즈</title>
+    <link href="https://fonts.googleapis.com/css2?family=Jua&display=swap" rel="stylesheet">
+    
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+
+    <style>
+        body {
+            font-family: 'Jua', sans-serif;
+            background-color: #f0f8ff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            color: #333;
+        }
+        #score-board {
+            position: absolute;
+            top: 20px;
+            right: 30px;
+            background-color: #ff6b6b;
+            color: white;
+            padding: 15px 25px;
+            border-radius: 20px;
+            font-size: 24px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .container {
+            text-align: center;
+            background: white;
+            padding: 40px;
+            border-radius: 30px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            max-width: 600px;
+            width: 90%;
+        }
+        h1 { margin-bottom: 10px; color: #4a90e2; }
+        
+        /* 이름 입력칸 스타일 */
+        #name-input {
+            padding: 15px;
+            font-size: 20px;
+            border-radius: 10px;
+            border: 2px solid #ddd;
+            width: 60%;
+            margin-bottom: 20px;
+            text-align: center;
+            font-family: 'Jua', sans-serif;
+        }
+
+        #question-box {
+            font-size: 28px;
+            margin: 20px 0;
+            min-height: 80px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: #eee;
+            border-radius: 15px;
+            padding: 20px;
+        }
+        #webcam-container {
+            margin: 20px auto;
+            border-radius: 20px;
+            overflow: hidden;
+            border: 5px solid #ddd;
+            width: 400px; 
+            height: 400px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #333;
+            position: relative;
+        }
+        canvas { width: 100%; height: 100%; object-fit: cover; }
+        
+        #progress-container {
+            width: 100%;
+            background-color: #ddd;
+            border-radius: 10px;
+            margin-top: 10px;
+            height: 30px;
+            display: none; 
+            position: relative;
+            overflow: hidden;
+        }
+        #progress-bar {
+            height: 100%;
+            width: 0%;
+            background-color: #2ecc71; 
+            transition: width 0.1s linear;
+        }
+        #progress-text {
+            position: absolute;
+            width: 100%;
+            text-align: center;
+            top: 5px;
+            font-size: 16px;
+            color: #333;
+            font-weight: bold;
+        }
+
+        #start-btn {
+            background-color: #4a90e2;
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 24px;
+            border-radius: 50px;
+            cursor: pointer;
+            font-family: 'Jua', sans-serif;
+            transition: transform 0.2s;
+        }
+        #start-btn:hover { transform: scale(1.05); background-color: #357abd; }
+        #start-btn:disabled { background-color: #ccc; cursor: not-allowed; transform: none; }
+        #result-message {
+            font-size: 40px;
+            font-weight: bold;
+            height: 50px;
+            margin-top: 10px;
+        }
+        .correct { color: #2ecc71; }
+        .wrong { color: #e74c3c; }
+    </style>
+</head>
+<body>
+
+    <div id="score-board">점수: <span id="score-val">0</span>점</div>
+
+    <div class="container">
+        <h1>🤖 AI O/X 퀴즈 게임</h1>
+        <div id="question-box">이름을 입력하고 게임을 시작하세요!</div>
+        
+        <input type="text" id="name-input" placeholder="이름을 입력해주세요 (예: 홍길동)">
+
+        <div id="webcam-container">
+            <span style="color:white; font-size: 20px;">카메라 로딩 대기중...</span>
+        </div>
+
+        <div id="progress-container">
+            <div id="progress-bar"></div>
+            <div id="progress-text">자세 유지중...</div>
+        </div>
+
+        <div id="result-message"></div>
+
+        <button id="start-btn" onclick="start()">게임 시작하기</button>
+    </div>
+
+    <script type="text/javascript">
+        // ==========================================
+        // ★ 업데이트해주신 주소를 적용했습니다! ★
+        const GAS_URL = "https://script.google.com/macros/s/AKfycby1vY_yLSrRaMCaSZvOjDp7cGJgutJF_xs38mkXz2-29gOgb7HUl3_GUMg49Jci7xxW/exec"; 
+        // ==========================================
+
+        const URL = "https://teachablemachine.withgoogle.com/models/gyHF-v61C/";
+
+        let model, webcam, maxPredictions;
+        let isGameRunning = false;
+        let score = 0;
+        let currentQuestionIndex = 0;
+        let isAnswering = false;
+        
+        // 이름 저장 변수
+        let playerName = ""; 
+
+        let lastClass = "";       
+        let holdStartTime = 0;    
+        const HOLD_DURATION = 5000; 
+
+        const quizData = [
+            { q: "1. 대한민국 수도는 서울이다.", a: "O" },
+            { q: "2. 사과는 영어로 Banana이다.", a: "X" },
+            { q: "3. 거북이는 파충류이다.", a: "O" },
+            { q: "4. 물은 50도에서 끓는다.", a: "X" },
+            { q: "5. 펭귄은 하늘을 날 수 있다.", a: "X" }
+        ];
+
+        // ----------------------------------------------------
+        // 데이터 전송 함수 (이름 포함)
+        // ----------------------------------------------------
+        function sendToSpreadsheet(userAnswer, currentScore, pName) {
+            const data = {
+                result: userAnswer, 
+                score: currentScore,
+                name: pName 
+            };
+
+            fetch(GAS_URL, {
+                method: "POST",
+                mode: "no-cors",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(data)
+            })
+            .then(() => console.log("데이터 전송 완료"))
+            .catch(err => console.error("전송 실패:", err));
+        }
+
+        async function start() {
+            const startBtn = document.getElementById("start-btn");
+            const nameInput = document.getElementById("name-input");
+
+            // 이름 입력 확인
+            if (nameInput.value.trim() === "") {
+                alert("게임을 시작하려면 이름을 꼭 입력해주세요!");
+                nameInput.focus();
+                return;
+            }
+            playerName = nameInput.value.trim(); 
+
+            if (typeof tmImage === 'undefined') {
+                alert("로딩 중입니다. 잠시 후 시도해주세요.");
+                return;
+            }
+            
+            try {
+                startBtn.innerHTML = "로딩중...";
+                startBtn.disabled = true;
+                nameInput.disabled = true; 
+
+                const modelURL = URL + "model.json";
+                const metadataURL = URL + "metadata.json";
+
+                model = await tmImage.load(modelURL, metadataURL);
+                maxPredictions = model.getTotalClasses();
+
+                const flip = true; 
+                webcam = new tmImage.Webcam(400, 400, flip); 
+                await webcam.setup(); 
+                await webcam.play();
+                window.requestAnimationFrame(loop);
+
+                document.getElementById("webcam-container").innerHTML = "";
+                document.getElementById("webcam-container").appendChild(webcam.canvas);
+
+                startGameLogic();
+
+            } catch (error) {
+                console.error(error);
+                alert("카메라 권한 오류");
+                startBtn.innerHTML = "다시 시도하기";
+                startBtn.disabled = false;
+                nameInput.disabled = false;
+            }
+        }
+
+        function startGameLogic() {
+            isGameRunning = true;
+            score = 0;
+            currentQuestionIndex = 0;
+            updateScore();
+            document.getElementById("start-btn").style.display = "none"; 
+            document.getElementById("name-input").style.display = "none";
+            showQuestion();
+        }
+
+        function showQuestion() {
+            if (currentQuestionIndex >= quizData.length) {
+                endGame();
+                return;
+            }
+            const qBox = document.getElementById("question-box");
+            qBox.innerText = quizData[currentQuestionIndex].q;
+            document.getElementById("result-message").innerText = "";
+            
+            resetTimer();
+            isAnswering = false;
+        }
+
+        async function loop() {
+            webcam.update(); 
+            if (isGameRunning && !isAnswering) {
+                await predict();
+            }
+            window.requestAnimationFrame(loop);
+        }
+
+        async function predict() {
+            const prediction = await model.predict(webcam.canvas);
+            let highestProbability = 0;
+            let bestClass = "";
+
+            for (let i = 0; i < maxPredictions; i++) {
+                if (prediction[i].probability > highestProbability) {
+                    highestProbability = prediction[i].probability;
+                    bestClass = prediction[i].className;
+                }
+            }
+
+            if (highestProbability > 0.90) {
+                if (bestClass === lastClass) {
+                    const timePassed = Date.now() - holdStartTime;
+                    updateProgressBar(timePassed, bestClass);
+                    if (timePassed >= HOLD_DURATION) {
+                        checkAnswer(bestClass);
+                        resetTimer(); 
+                    }
+                } else {
+                    lastClass = bestClass;
+                    holdStartTime = Date.now();
+                    resetTimerUI(); 
+                }
+            } else {
+                lastClass = "";
+                resetTimer();
+            }
+        }
+
+        function updateProgressBar(timePassed, className) {
+            const container = document.getElementById("progress-container");
+            const bar = document.getElementById("progress-bar");
+            const text = document.getElementById("progress-text");
+            container.style.display = "block"; 
+            const percent = Math.min((timePassed / HOLD_DURATION) * 100, 100);
+            bar.style.width = percent + "%";
+            const seconds = (timePassed / 1000).toFixed(1);
+            text.innerText = `${className} 유지 중... (${seconds}초)`;
+        }
+
+        function resetTimer() {
+            holdStartTime = Date.now(); 
+            resetTimerUI();
+        }
+
+        function resetTimerUI() {
+            const container = document.getElementById("progress-container");
+            const bar = document.getElementById("progress-bar");
+            container.style.display = "none"; 
+            bar.style.width = "0%";
+        }
+
+        function checkAnswer(userAnswer) {
+            isAnswering = true;
+            resetTimerUI(); 
+
+            const correctAns = quizData[currentQuestionIndex].a;
+            const resultMsg = document.getElementById("result-message");
+
+            if (userAnswer === correctAns) {
+                score++;
+                updateScore();
+                resultMsg.innerText = "정답! ⭕";
+                resultMsg.className = "correct";
+            } else {
+                resultMsg.innerText = "땡! ❌";
+                resultMsg.className = "wrong";
+            }
+
+            setTimeout(() => {
+                currentQuestionIndex++;
+                showQuestion();
+            }, 2000);
+        }
+
+        function updateScore() {
+            document.getElementById("score-val").innerText = score;
+        }
+
+        function endGame() {
+            isGameRunning = false;
+            document.getElementById("question-box").innerText = 
+                `${playerName}님의 최종 점수: ${score}점`;
+            
+            let msg = "";
+            if (score === 5) msg = "완벽해요! 💯";
+            else if (score >= 3) msg = "참 잘했어요! 🏆";
+            else msg = "조금 더 분발하세요! 💪";
+            
+            document.getElementById("result-message").innerText = msg;
+            
+            // 게임 완료 시 이름과 점수 전송
+            sendToSpreadsheet("완료", score, playerName); 
+            
+            const btn = document.getElementById("start-btn");
+            const nameInput = document.getElementById("name-input");
+            
+            btn.style.display = "inline-block";
+            btn.innerHTML = "다시 하기";
+            btn.disabled = false;
+            
+            nameInput.style.display = "inline-block";
+            nameInput.disabled = false;
+            nameInput.value = "";
+        }
+    </script>
+</body>
+</html>
