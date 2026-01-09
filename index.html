@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 몸으로 말해요 퀴즈</title>
+    <link href="https://fonts.googleapis.com/css2?family=Jua&display=swap" rel="stylesheet">
+    
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+
+    <style>
+        body {
+            font-family: 'Jua', sans-serif;
+            background-color: #f0f8ff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            color: #333;
+        }
+        #score-board {
+            position: absolute;
+            top: 20px;
+            right: 30px;
+            background-color: #ff6b6b;
+            color: white;
+            padding: 15px 25px;
+            border-radius: 20px;
+            font-size: 24px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .container {
+            text-align: center;
+            background: white;
+            padding: 40px;
+            border-radius: 30px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            max-width: 600px;
+            width: 90%;
+        }
+        h1 { margin-bottom: 10px; color: #4a90e2; }
+        #question-box {
+            font-size: 28px;
+            margin: 20px 0;
+            min-height: 80px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: #eee;
+            border-radius: 15px;
+            padding: 20px;
+        }
+        #webcam-container {
+            margin: 20px auto;
+            border-radius: 20px;
+            overflow: hidden;
+            border: 5px solid #ddd;
+            width: 400px; 
+            height: 400px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #333;
+            position: relative;
+        }
+        canvas { width: 100%; height: 100%; object-fit: cover; }
+        
+        /* 로딩 바 스타일 추가 */
+        #progress-container {
+            width: 100%;
+            background-color: #ddd;
+            border-radius: 10px;
+            margin-top: 10px;
+            height: 30px;
+            display: none; /* 평소에는 숨김 */
+            position: relative;
+            overflow: hidden;
+        }
+        #progress-bar {
+            height: 100%;
+            width: 0%;
+            background-color: #2ecc71; /* 초록색 */
+            transition: width 0.1s linear;
+        }
+        #progress-text {
+            position: absolute;
+            width: 100%;
+            text-align: center;
+            top: 5px;
+            font-size: 16px;
+            color: #333;
+            font-weight: bold;
+        }
+
+        #start-btn {
+            background-color: #4a90e2;
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 24px;
+            border-radius: 50px;
+            cursor: pointer;
+            font-family: 'Jua', sans-serif;
+            transition: transform 0.2s;
+        }
+        #start-btn:hover { transform: scale(1.05); background-color: #357abd; }
+        #start-btn:disabled { background-color: #ccc; cursor: not-allowed; transform: none; }
+        #result-message {
+            font-size: 40px;
+            font-weight: bold;
+            height: 50px;
+            margin-top: 10px;
+        }
+        .correct { color: #2ecc71; }
+        .wrong { color: #e74c3c; }
+    </style>
+</head>
+<body>
+
+    <div id="score-board">점수: <span id="score-val">0</span>점</div>
+
+    <div class="container">
+        <h1>🤖 AI O/X 퀴즈 게임</h1>
+        <div id="question-box">아래 버튼을 눌러 게임을 시작하세요!</div>
+        
+        <div id="webcam-container">
+            <span style="color:white; font-size: 20px;">카메라 로딩 대기중...</span>
+        </div>
+
+        <div id="progress-container">
+            <div id="progress-bar"></div>
+            <div id="progress-text">자세 유지중...</div>
+        </div>
+
+        <div id="result-message"></div>
+
+        <button id="start-btn" onclick="start()">게임 시작하기</button>
+    </div>
+
+    <script type="text/javascript">
+        // 선생님의 모델 URL
+        const URL = "https://teachablemachine.withgoogle.com/models/gyHF-v61C/";
+
+        let model, webcam, maxPredictions;
+        let isGameRunning = false;
+        let score = 0;
+        let currentQuestionIndex = 0;
+        let isAnswering = false;
+
+        // ⏱️ 타이머 관련 변수
+        let lastClass = "";       // 직전에 인식된 자세
+        let holdStartTime = 0;    // 자세를 잡기 시작한 시간
+        const HOLD_DURATION = 5000; // 5초 (밀리초 단위) - 수정 가능
+
+        const quizData = [
+            { q: "1. 대한민국 수도는 서울이다.", a: "O" },
+            { q: "2. 사과는 영어로 Banana이다.", a: "X" },
+            { q: "3. 거북이는 파충류이다.", a: "O" },
+            { q: "4. 물은 50도에서 끓는다.", a: "X" },
+            { q: "5. 펭귄은 하늘을 날 수 있다.", a: "X" }
+        ];
+
+        async function start() {
+            const startBtn = document.getElementById("start-btn");
+            if (typeof tmImage === 'undefined') {
+                alert("인공지능 로딩 중입니다. 잠시 후 다시 시도해주세요.");
+                return;
+            }
+            try {
+                startBtn.innerHTML = "로딩중...";
+                startBtn.disabled = true;
+
+                const modelURL = URL + "model.json";
+                const metadataURL = URL + "metadata.json";
+
+                model = await tmImage.load(modelURL, metadataURL);
+                maxPredictions = model.getTotalClasses();
+
+                const flip = true; 
+                webcam = new tmImage.Webcam(400, 400, flip); 
+                await webcam.setup(); 
+                await webcam.play();
+                window.requestAnimationFrame(loop);
+
+                document.getElementById("webcam-container").innerHTML = "";
+                document.getElementById("webcam-container").appendChild(webcam.canvas);
+
+                startGameLogic();
+
+            } catch (error) {
+                console.error(error);
+                alert("오류: 카메라 권한을 확인해주세요.");
+                startBtn.innerHTML = "다시 시도하기";
+                startBtn.disabled = false;
+            }
+        }
+
+        function startGameLogic() {
+            isGameRunning = true;
+            score = 0;
+            currentQuestionIndex = 0;
+            updateScore();
+            document.getElementById("start-btn").style.display = "none"; 
+            showQuestion();
+        }
+
+        function showQuestion() {
+            if (currentQuestionIndex >= quizData.length) {
+                endGame();
+                return;
+            }
+            const qBox = document.getElementById("question-box");
+            qBox.innerText = quizData[currentQuestionIndex].q;
+            document.getElementById("result-message").innerText = "";
+            
+            // 문제 바뀔 때 타이머 초기화
+            resetTimer();
+            isAnswering = false;
+        }
+
+        async function loop() {
+            webcam.update(); 
+            if (isGameRunning && !isAnswering) {
+                await predict();
+            }
+            window.requestAnimationFrame(loop);
+        }
+
+        // 예측 및 5초 유지 로직
+        async function predict() {
+            const prediction = await model.predict(webcam.canvas);
+
+            let highestProbability = 0;
+            let bestClass = "";
+
+            for (let i = 0; i < maxPredictions; i++) {
+                if (prediction[i].probability > highestProbability) {
+                    highestProbability = prediction[i].probability;
+                    bestClass = prediction[i].className;
+                }
+            }
+
+            // 정확도가 90% 이상일 때만 카운트 시작
+            if (highestProbability > 0.90) {
+                
+                // 1. 이전 프레임과 같은 자세를 유지 중이라면
+                if (bestClass === lastClass) {
+                    const timePassed = Date.now() - holdStartTime;
+                    
+                    // 화면에 게이지 업데이트
+                    updateProgressBar(timePassed, bestClass);
+
+                    // 2. 5초(HOLD_DURATION)가 지났다면 정답 제출
+                    if (timePassed >= HOLD_DURATION) {
+                        checkAnswer(bestClass);
+                        resetTimer(); // 제출 후 타이머 초기화
+                    }
+
+                } else {
+                    // 3. 자세가 바뀌었다면 타이머 리셋 및 시작
+                    lastClass = bestClass;
+                    holdStartTime = Date.now();
+                    resetTimerUI(); // UI 초기화
+                }
+            } else {
+                // 정확도가 낮으면(자세 풀림) 타이머 리셋
+                lastClass = "";
+                resetTimer();
+            }
+        }
+
+        // 게이지 바 업데이트 함수
+        function updateProgressBar(timePassed, className) {
+            const container = document.getElementById("progress-container");
+            const bar = document.getElementById("progress-bar");
+            const text = document.getElementById("progress-text");
+
+            container.style.display = "block"; // 게이지 보이기
+            
+            // 퍼센트 계산 (최대 100%)
+            const percent = Math.min((timePassed / HOLD_DURATION) * 100, 100);
+            bar.style.width = percent + "%";
+            
+            // 초 단위 표시
+            const seconds = (timePassed / 1000).toFixed(1);
+            text.innerText = `${className} 유지 중... (${seconds}초)`;
+        }
+
+        // 타이머 및 UI 초기화 함수
+        function resetTimer() {
+            holdStartTime = Date.now(); // 시간만 현재로 리셋 (다음 자세 준비)
+            resetTimerUI();
+        }
+
+        function resetTimerUI() {
+            const container = document.getElementById("progress-container");
+            const bar = document.getElementById("progress-bar");
+            
+            container.style.display = "none"; // 게이지 숨기기
+            bar.style.width = "0%";
+        }
+
+        function checkAnswer(userAnswer) {
+            isAnswering = true;
+            resetTimerUI(); // 정답 처리 되면 게이지 즉시 숨김
+
+            const correctAns = quizData[currentQuestionIndex].a;
+            const resultMsg = document.getElementById("result-message");
+
+            if (userAnswer === correctAns) {
+                score++;
+                updateScore();
+                resultMsg.innerText = "정답! ⭕";
+                resultMsg.className = "correct";
+            } else {
+                resultMsg.innerText = "땡! ❌";
+                resultMsg.className = "wrong";
+            }
+
+            setTimeout(() => {
+                currentQuestionIndex++;
+                showQuestion();
+            }, 2000);
+        }
+
+        function updateScore() {
+            document.getElementById("score-val").innerText = score;
+        }
+
+        function endGame() {
+            isGameRunning = false;
+            document.getElementById("question-box").innerText = "게임 종료! 총점: " + score + "점";
+            
+            let msg = "";
+            if (score === 5) msg = "완벽해요! 💯";
+            else if (score >= 3) msg = "참 잘했어요! 🏆";
+            else msg = "조금 더 분발하세요! 💪";
+            
+            document.getElementById("result-message").innerText = msg;
+            
+            const btn = document.getElementById("start-btn");
+            btn.style.display = "inline-block";
+            btn.innerHTML = "다시 하기";
+            btn.disabled = false;
+        }
+    </script>
+</body>
+</html>
